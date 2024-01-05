@@ -4,6 +4,7 @@
 #include "tokenizer.h"
 #include "printable.h"
 
+#include <assert.h>
 #include <ctype.h>
 #include <limits.h>
 #include <stdint.h>
@@ -13,6 +14,9 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 /* ======= Grammar Rules =======
 
@@ -60,6 +64,22 @@ typedef struct symbol_table {
     Symbol_table_entry* syms;
 } Symbol_table;
 
+static Value* parse_operator(Error* err, Token* t)
+{
+	if (t->type != TOKEN_OPERATOR) {
+		error_push(err, "%s: unexpected token type: %s", __func__, token_type_str[t->type]);
+		return NULL;
+	}
+	Value* v = malloc(sizeof *v);
+	if (!v) {
+		error_push(err, "%s: failed to allocate value: %s", __func__, strerror(errno));
+		return NULL;
+	}
+	v->type = VALUE_OPERATOR;
+	strncpy(v->op, t->start, MIN(t->end - t->start, sizeof(v->op)));
+	return v;
+}
+
 static Value* parse_int(Error* err, Token* t)
 {
 	if (t->type != TOKEN_INTEGER) {
@@ -72,7 +92,13 @@ static Value* parse_int(Error* err, Token* t)
 		return NULL;
 	}
 	v->type = VALUE_INTEGER;
+	assert(errno == 0);
+	errno = 0;
 	v->i = strtol(t->start, NULL, 10);
+	if (errno != 0) {
+		error_push(err, "%s: failed to parse int: %s", __func__, strerror(errno));
+		return NULL;
+	}
 	return v;
 }
 
@@ -112,39 +138,75 @@ static Value* parse_binary_expr(Error* err, Value* lval, Value* rval, Value* op)
 	return result;
 }
 
-static int parser_next(Error* err, Mfile* m)
+static Value* parser_handle_binary_expr(Error* err, Token* peek, Mfile* m)
+{
+		Value* lval = parse_int(err, peek);
+		if (!error_empty(err) || !lval) {
+			goto generic_error;
+		}
+
+		Token* op_tok = token_read(err, m);
+		if (!error_empty(err)) {
+			goto generic_error;
+		} else if (op_tok->type != TOKEN_OPERATOR) {
+			goto syntax_error;
+		}
+
+		Value* op = parse_operator(err, op_tok);
+		if (!error_empty(err)) { 
+			goto generic_error;
+		}
+
+		Token* rval_tok = token_read(err, m);
+		if (!error_empty(err)) {
+			goto generic_error;
+		} else if (rval_tok->type != TOKEN_INTEGER) {
+			goto syntax_error;
+		}
+		Value* rval = parse_int(err, rval_tok);
+		if (!error_empty(err)) {
+			goto generic_error;
+		}
+
+		Value* result = parse_binary_expr(err, lval, rval, op);
+		if (!error_empty(err)) {
+			goto generic_error;
+		}
+		return result;
+
+syntax_error:
+		error_push(err, "%s: syntax error, expected binary expression", __func__);
+generic_error:
+		return NULL;
+}
+
+static Value* parser_next(Error* err, Mfile* m)
 {
 	mfile_skip(m, isspace);
 	Token* t = token_read(err, m);
 	if (t->type == EOF) {
-		return EOF;
+		return NULL;
 	} else if (!error_empty(err)) {
-		error_print(err);
-		return EOF;
-	} else {
-		fprintf(stderr, "unknown error\n");
-		return EOF;
+		return NULL;
 	}
 
-	Value* v;
+	Value* result;
+
 	switch (t->type) {
-		case TOKEN_INTEGER:
-			v = parse_int(err, t);
-			if (!v) {
-				return EOF;
-			}
+		case TOKEN_INTEGER: {
+			result = parser_handle_binary_expr(err, t, m);
 			if (!error_empty(err)) {
-				error_print(err);
-				return EOF;
+				goto syntax_error;
 			}
-			printf("\nINT: %ld\n", v->i);
-			break;
-			
+		}
+		default: syntax_error: {
+			error_push(err, "syntax error: unexpected token %s", token_type_str[t->type]);
+			return NULL;
+		}
 	}
 	token_print(err, t);
-	return 0;
+	return result;
 }
-
 
 /* ========================================================================= */
 
@@ -168,21 +230,23 @@ int main(int argc, char** argv)
     if (!error_empty(&err)) {
         error_push(&err, "mfile_open");
         error_print(&err);
-        status = EXIT_FAILURE;
-        error_clear(&err);
+        return EXIT_FAILURE;
     }
 
-    error_clear(&err);
 	while (!mfile_eof(m)) {
 		parser_next(&err, m);
+		if (!error_empty(&err)) {
+			error_print(&err);
+			return EXIT_FAILURE;
+		}
 	}
 
-    error_clear(&err);
+
     mfile_close(&err, m);
     if (!error_empty(&err)) {
         error_push(&err, "mfile_close");
         error_print(&err);
-        status = EXIT_FAILURE;
+        return EXIT_FAILURE;
     }
 
     return status;

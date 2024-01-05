@@ -57,7 +57,11 @@ static void error_msg_print(struct error_msg* msg, bool print_colon)
 	if (!msg)
 		return;
     error_msg_print(msg->next, true);
-	fprintf(stderr, "%s", msg->message);
+
+	if (msg->message) {
+		fprintf(stderr, "%s", msg->message);
+	}
+
     if (print_colon) {
         fprintf(stderr, ": ");
     }

@@ -125,6 +125,7 @@ Token* token_read(Error* err, Mfile* m)
         error_push(err, "failed to allocate token: %s", strerror(errno));
         return NULL;
     }
+	mfile_skip(m, isspace);
     const int c = mfile_curchar(m);
 
     if (isalpha(c)) {
@@ -138,7 +139,7 @@ Token* token_read(Error* err, Mfile* m)
 	} else if ( c == EOF ) {
 		t->type = EOF;
     } else {
-        error_push(err, "unexpected character: %c", PRINTABLE(c));
+        error_push(err, "unexpected character: %s (0x%02x)", PRINTABLE(c), c);
     }
 
     return t;
