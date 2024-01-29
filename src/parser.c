@@ -1,31 +1,25 @@
 
-/*
- * TODO:
- * line 312
- * */
-
+#include "common.h"
 #include "error.h"
 #include "file_stream.h"
-#include "tokenizer.h"
 #include "printable.h"
-#include "common.h"
 #include "stack.h"
+#include "tokenizer.h"
 
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/mman.h>
-#include <inttypes.h>
-#include <unistd.h>
 #include <string.h>
-#include <errno.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
-
 
 /* ======= Grammar Rules =======
 
@@ -37,42 +31,25 @@ statement
     | assignment;
 assignment
     : IDENTIFIER TYPE ASSIGNMENT expr
-expr
-    : INT OPERATOR INT     {$$ = binary_op_int($1, $3, $2);}
-    | INT OPERATOR FLOAT   {conv($1); $$ = binary_op_float($1, $3, $2);}
-    | FLOAT OPERATOR INT   {conv($2); $$ = binary_op_float($1, $3, $2);}
-    | FLOAT OPERATOR FLOAT {$$ = binary_op_float($1, $3, $2);};
-    | INT
-    | FLOAT
 
-   ============================= */
+expr : <implemented without BNF or recursion, standard mathematics rules>
 
-enum value_type {
-    VALUE_INTEGER,
-    VALUE_FLOATING,
-    VALUE_TYPE_COUNT,
-};
-
-static const char* value_type_str[VALUE_TYPE_COUNT] = {
-    [VALUE_INTEGER]  = "VALUE_INTEGER",
-    [VALUE_FLOATING] = "VALUE_FLOATING",
-};
+ ================================ */
 
 typedef struct parser {
     Token* cur;
     Token* next;
     Mfile* m;
-} ParserState;
+} TokenStream;
 
-
-void parser_print_position(ParserState* p)
+void parser_print_position(TokenStream* ts)
 {
-    Mfile m = *(p->m);
+    Mfile m = *(ts->m);
 
     m.pos = 0;
     int linecount = 0;
     int col = 0;
-    while (!mfile_eof(&m) && m.pos <= p->m->pos) {
+    while (!mfile_eof(&m) && m.pos <= ts->m->pos) {
         char c = mfile_get(&m);
         if (c == '\n') {
             linecount++;
@@ -81,16 +58,15 @@ void parser_print_position(ParserState* p)
             col++;
         }
     }
+
     fprintf(stderr, "\nLine: %d\nCol: %d\n", linecount, col);
 }
 
-bool parser_advance(Error* err, ParserState* p)
+bool tokenstream_advance(Error* err, TokenStream* ts)
 {
-    p->cur = p->next;
-    //if (p->cur)
-    //    token_print(NULL, p->cur);
-    mfile_skip(p->m, isspace);
-    p->next = token_read(err, p->m);
+    ts->cur = ts->next;
+    mfile_skip(ts->m, isspace);
+    ts->next = token_read(err, ts->m);
     if (!error_empty(err)) {
         error_push(err, "%s failed", __func__);
         return false;
@@ -98,34 +74,43 @@ bool parser_advance(Error* err, ParserState* p)
     return true;
 }
 
+enum value_type {
+    VALUE_INTEGER,
+    VALUE_FLOATING,
+};
+
+static const char* value_type_str[] = {
+    [VALUE_INTEGER]  = "VALUE_INTEGER",
+    [VALUE_FLOATING] = "VALUE_FLOATING",
+};
+
 typedef struct value {
     const char* debug_name;
     enum value_type type;
     union {
         int64_t i64;
         double f64;
-        char op[3];
     };
 } Value;
 
 static void value_print(FILE* out, Value* v)
 {
     switch (v->type) {
-        case VALUE_INTEGER:
-            fprintf(out, "%" PRId64, v->i64);
-            break;
-        case VALUE_FLOATING:
-            fprintf(out, "%lf", v->f64);
-            break;
-        default:
-            fprintf(out, "(bad value)");
-            break;
+	case VALUE_INTEGER:
+		fprintf(out, "%" PRId64, v->i64);
+		break;
+	case VALUE_FLOATING:
+		fprintf(out, "%lf", v->f64);
+		break;
+	default:
+		fprintf(out, "(bad value)");
+		break;
     }
 }
 
-static Value* parse_int(Error* err, ParserState* p)
+static Value* parse_int(Error* err, TokenStream* ts)
 {
-    Token* t = p->cur;
+    Token* t = ts->cur;
     if (t->type != TOKEN_INTEGER) {
         error_push(err, "(%s) unexpected token type: %s", __func__, token_type_str[t->type]);
         return NULL;
@@ -143,13 +128,13 @@ static Value* parse_int(Error* err, ParserState* p)
         error_push(err, "(%s) failed to parse int: %s", __func__, strerror(errno));
         return NULL;
     }
-    parser_advance(err, p);
+    tokenstream_advance(err, ts);
     return v;
 }
 
-static Value* parse_floating(Error* err, ParserState* p)
+static Value* parse_floating(Error* err, TokenStream* ts)
 {
-    Token* t = p->cur;
+    Token* t = ts->cur;
     if (t->type != TOKEN_FLOATING) {
         error_push(err, "(%s) unexpected token type: %s", __func__, token_type_str[t->type]);
         return NULL;
@@ -167,7 +152,7 @@ static Value* parse_floating(Error* err, ParserState* p)
         error_push(err, "(%s) failed to parse float: %s", __func__, strerror(errno));
         return NULL;
     }
-    parser_advance(err, p);
+    tokenstream_advance(err, ts);
     if (!error_empty(err)) {
         error_push(err, "(%s) couldn't advance parser", __func__);
         return NULL;
@@ -197,7 +182,7 @@ static Value* binary_op(Error* err, Value* lval, Value* rval, Token* op)
                 value_type_str[rval->type], token_type_str[op->type]);
         fprintf(stderr, "\n####\n");
         token_print(err, op);
-        return NULL;
+        goto fail;
     }
 
     if (lval->type == VALUE_FLOATING && rval->type == VALUE_INTEGER) {
@@ -207,13 +192,13 @@ static Value* binary_op(Error* err, Value* lval, Value* rval, Token* op)
     }
     if (!error_empty(err)) {
         error_push(err, "binary expression failed");
-        return NULL;
+        goto fail;
     }
 
     Value* result = calloc(1, sizeof *result);
     if (!result) {
         error_push(err, "%s: failed to allocate value: %s", __func__, strerror(errno));
-        return NULL;
+        goto fail;
     }
 
     //fprintf(stderr, "\ndoing op: %s %c %s", value_type_str[lval->type], op->start[0], value_type_str[rval->type]);
@@ -233,8 +218,6 @@ static Value* binary_op(Error* err, Value* lval, Value* rval, Token* op)
             result->i64 = lval->i64 / rval->i64;
             break;
         }
-        //fprintf(stderr, "\nCALCULATED EXPRESSION %ld %c %ld = %ld\n", lval->i64,
-        //        op->start[0], rval->i64, result->i64);
     } else if (rval->type == VALUE_FLOATING && lval->type == VALUE_FLOATING) {
         result->type = VALUE_FLOATING;
         switch (op->start[0]) {
@@ -251,12 +234,13 @@ static Value* binary_op(Error* err, Value* lval, Value* rval, Token* op)
             result->f64 = lval->f64 / rval->f64;
             break;
         }
-        //fprintf(stderr, "\nCALCULATED EXPRESSION %lf %c %lf = %lf\n", lval->f64,
-        //        op->start[0], rval->f64, result->f64);
     }
+	free(op);
     return result;
-}
 
+fail:
+	return NULL;
+}
 
 static inline int8_t operator_precedence(Token* op)
 {
@@ -270,7 +254,7 @@ static inline int8_t operator_precedence(Token* op)
     return lookup[(size_t)(op->start[0])];
 }
 
-static Value* parse_expr(Error* err, ParserState* p)
+static Value* parse_expr(Error* err, TokenStream* ts)
 {
     FixedStack op_stack = STACK_INIT;
     FixedStack value_stack = STACK_INIT;
@@ -278,16 +262,16 @@ static Value* parse_expr(Error* err, ParserState* p)
     fprintf(stderr, "PRATT START\n");
 
     while (1) {
-        token_print(NULL, p->cur);
-        switch (p->cur->type) {
+        token_print(NULL, ts->cur);
+        switch (ts->cur->type) {
         case TOKEN_INTEGER:
-            stack_push(&value_stack, parse_int(err, p));
+            stack_push(&value_stack, parse_int(err, ts));
             if (!error_empty(err))
                 goto fail;
             break;
 
         case TOKEN_FLOATING:
-            stack_push(&value_stack, parse_floating(err, p));
+            stack_push(&value_stack, parse_floating(err, ts));
             if (!error_empty(err))
                 goto fail;
             break;
@@ -298,8 +282,8 @@ static Value* parse_expr(Error* err, ParserState* p)
             break;
 
         case TOKEN_PAREN_OPEN:
-            stack_push(&op_stack, p->cur);
-            parser_advance(err, p);
+            stack_push(&op_stack, ts->cur);
+            tokenstream_advance(err, ts);
             if (!error_empty(err))
                 goto fail;
             break;
@@ -320,14 +304,14 @@ static Value* parse_expr(Error* err, ParserState* p)
             } else {
                 stack_pop(&op_stack);
             }
-            parser_advance(err, p);
+            tokenstream_advance(err, ts);
             if (!error_empty(err))
                 goto fail;
 
             break;
 
         case TOKEN_OPERATOR: {
-            Token* new_op = p->cur;
+            Token* new_op = ts->cur;
             if (!stack_empty(&op_stack)) {
                 while (operator_precedence(new_op) < operator_precedence(stack_top(&op_stack))) {
                     Value* rval   = stack_pop(&value_stack);
@@ -339,7 +323,7 @@ static Value* parse_expr(Error* err, ParserState* p)
                     stack_push(&value_stack, result);
                 }
             }
-            parser_advance(err, p);
+            tokenstream_advance(err, ts);
             if (!error_empty(err))
                 goto fail;
             stack_push(&op_stack, new_op);
@@ -370,17 +354,17 @@ fail:
     return NULL;
 }
 
-static Value* parser_next(Error* err, ParserState* p)
+static Value* parser_next(Error* err, TokenStream* ts)
 {
-    if (p->cur->type == TOKEN_EOF || !error_empty(err)) {
+    if (ts->cur->type == TOKEN_EOF || !error_empty(err)) {
         return NULL;
     }
 
     Value* result;
-    switch (p->cur->type) {
+    switch (ts->cur->type) {
     case TOKEN_INTEGER:
     case TOKEN_FLOATING:
-        result = parse_expr(err, p);
+        result = parse_expr(err, ts);
         if (!error_empty(err) || result == NULL) {
             goto syntax_error;
         }
@@ -392,15 +376,15 @@ static Value* parser_next(Error* err, ParserState* p)
 
     default: syntax_error:
         error_push(err, "(%s) syntax error: unexpected token %s (%s)", __func__,
-                token_type_str[p->cur->type], token_str(p->cur));
+                token_type_str[ts->cur->type], token_str(ts->cur));
         return NULL;
     }
 
-    if (p->cur->type != TOKEN_STATEMENT_END) {
+    if (ts->cur->type != TOKEN_STATEMENT_END) {
         error_push(err, "(%s) expected semicolon", __func__);
         return NULL;
     }
-    parser_advance(err, p);
+    tokenstream_advance(err, ts);
 
     return result;
 }
@@ -424,19 +408,19 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    ParserState p = {
+    TokenStream ts = {
         .cur = NULL,
         .next = NULL,
         .m = m,
     };
-    parser_advance(&err, &p);
-    parser_advance(&err, &p);
+    tokenstream_advance(&err, &ts);
+    tokenstream_advance(&err, &ts);
 
     while (!mfile_eof(m)) {
-        parser_next(&err, &p);
+        parser_next(&err, &ts);
         if (!error_empty(&err)) {
             error_print(&err);
-            parser_print_position(&p);
+            parser_print_position(&ts);
             return EXIT_FAILURE;
         }
     }
