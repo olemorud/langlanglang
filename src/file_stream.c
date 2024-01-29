@@ -11,8 +11,6 @@
 #include "error.h"
 #include "file_stream.h"
 
-char* mfile_overflow_slope = NULL;
-
 Mfile* mfile_open(Error* err, char* filename)
 {
 	Mfile* s = malloc(sizeof *s);
@@ -58,51 +56,54 @@ void mfile_close(Error* err, Mfile* s)
     ok = munmap(s->data, s->size);
     if (ok == -1) {
         error_push(err, "failed to munmap file: %s", strerror(errno));
-        free(s);
-        return;
     }
     close(s->fd);
     if (ok == -1) {
         error_push(err, "failed to close file: %s", strerror(errno));
-        free(s);
-        return;
     }
     free(s);
 }
 
-int mfile_get(Mfile* s)
+inline size_t mfile_inc_pos(Mfile* m)
 {
-    if (s->pos >= s->size) {
+    return m->pos++;
+}
+inline size_t mfile_decr_pos(Mfile* m)
+{
+    return m->pos--;
+}
+
+inline int mfile_get(Mfile* m)
+{
+    if (m->pos >= m->size) {
         return EOF;
     }
-    return s->data[s->pos++];
+    return m->data[mfile_inc_pos(m)];
 }
 
-bool mfile_eof(Mfile* s)
+inline bool mfile_eof(Mfile* m)
 {
-    return s->pos >= s->size;
+    return m->pos >= m->size;
 }
 
-char* mfile_cur(Mfile* s)
+inline char* mfile_cur(Mfile* m)
 {
-    if (s->pos >= s->size) {
-        return mfile_overflow_slope;
+    static char eof = EOF;
+    if (m->pos >= m->size) {
+        return &eof;
     }
-    return s->data + s->pos;
+    return m->data + m->pos;
 }
 
-int mfile_curchar(Mfile* s)
+inline int mfile_curchar(Mfile* m)
 {
-    if (s->pos >= s->size) {
-        return EOF;
-    }
-    return *(s->data + s->pos);
+    return *(mfile_cur(m));
 }
 
-void mfile_skip(Mfile* s, int (*f)(int))
+void mfile_skip(Mfile* m, int (*f)(int))
 {
-    while (f(*(s->data + s->pos)))
-        s->pos += 1;
+    while (f(mfile_curchar(m)))
+        mfile_inc_pos(m);
 }
 
 

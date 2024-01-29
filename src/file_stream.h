@@ -8,7 +8,7 @@ extern char* mfile_overflow_slope;
 
 typedef struct mfile {
 	char* data;
-	off_t size;
+	size_t size;
 	size_t pos;
 
     // internal
@@ -37,3 +37,8 @@ void mfile_skip(Mfile* s, int (*f)(int));
 
 /* Get current char */
 int mfile_curchar(Mfile* s);
+
+/* Skip the current char */
+size_t mfile_inc_pos(Mfile* m);
+
+size_t mfile_decr_pos(Mfile* m);

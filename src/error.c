@@ -83,9 +83,9 @@ static void error_msg_free(struct error_msg* msg)
         return;
     error_msg_free(msg->next);
     free(msg->message);
-    free(msg);
     msg->message = NULL;
     msg->next    = NULL;
+    free(msg);
 }
 
 void error_clear(Error* err)
