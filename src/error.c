@@ -63,7 +63,7 @@ static void error_msg_print(struct error_msg* msg, bool print_colon)
 	}
 
     if (print_colon) {
-        fprintf(stderr, ": ");
+        fprintf(stderr, "\n - ");
     }
 }
 
