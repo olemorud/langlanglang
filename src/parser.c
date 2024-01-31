@@ -36,12 +36,6 @@ expr : <implemented without BNF or recursion, standard mathematics rules>
 
  ================================ */
 
-typedef struct parser {
-    Token* cur;
-    Token* next;
-    Mfile* m;
-} TokenStream;
-
 void parser_print_position(TokenStream* ts)
 {
     Mfile m = *(ts->m);
@@ -60,18 +54,6 @@ void parser_print_position(TokenStream* ts)
     }
 
     fprintf(stderr, "\nLine: %d\nCol: %d\n", linecount, col);
-}
-
-bool tokenstream_advance(Error* err, TokenStream* ts)
-{
-    ts->cur = ts->next;
-    mfile_skip(ts->m, isspace);
-    ts->next = token_read(err, ts->m);
-    if (!error_empty(err)) {
-        error_push(err, "%s failed", __func__);
-        return false;
-    }
-    return true;
 }
 
 enum value_type {
@@ -96,28 +78,31 @@ typedef struct value {
 static void value_print(FILE* out, Value* v)
 {
     switch (v->type) {
-	case VALUE_INTEGER:
-		fprintf(out, "%" PRId64, v->i64);
-		break;
-	case VALUE_FLOATING:
-		fprintf(out, "%lf", v->f64);
-		break;
-	default:
-		fprintf(out, "(bad value)");
-		break;
+    case VALUE_INTEGER:
+        fprintf(out, "%" PRId64, v->i64);
+        break;
+    case VALUE_FLOATING:
+        fprintf(out, "%lf", v->f64);
+        break;
+    default:
+        fprintf(out, "(bad value)");
+        break;
     }
 }
 
 static Value* parse_int(Error* err, TokenStream* ts)
 {
-    Token* t = ts->cur;
+    Token* t = tokenstream_get(err, ts);
+    if (!error_empty(err)) {
+        return NULL;
+    }
     if (t->type != TOKEN_INTEGER) {
-        error_push(err, "(%s) unexpected token type: %s", __func__, token_type_str[t->type]);
+        error_push(err, "unexpected token type: %s", token_type_str[t->type]);
         return NULL;
     }
     Value* v = calloc(1, sizeof *v);
     if (!v) {
-        error_push(err, "(%s) failed to allocate value: %s", __func__, strerror(errno));
+        error_push(err, "failed to allocate value: %s", strerror(errno));
         return NULL;
     }
     v->type = VALUE_INTEGER;
@@ -125,23 +110,24 @@ static Value* parse_int(Error* err, TokenStream* ts)
     errno = 0;
     v->i64= strtol(t->start, NULL, 10);
     if (errno != 0) {
-        error_push(err, "(%s) failed to parse int: %s", __func__, strerror(errno));
+        error_push(err, "failed to parse int: %s", strerror(errno));
         return NULL;
     }
-    tokenstream_advance(err, ts);
     return v;
 }
 
 static Value* parse_floating(Error* err, TokenStream* ts)
 {
-    Token* t = ts->cur;
+    Token* t = tokenstream_get(err, ts);
+    if (!error_empty(err))
+        return NULL;
     if (t->type != TOKEN_FLOATING) {
-        error_push(err, "(%s) unexpected token type: %s", __func__, token_type_str[t->type]);
+        error_push(err, "unexpected token type: %s", token_type_str[t->type]);
         return NULL;
     }
     Value* v = calloc(1, sizeof *v);
     if (!v) {
-        error_push(err, "(%s) failed to allocate value: %s", __func__, strerror(errno));
+        error_push(err, "failed to allocate value: %s", strerror(errno));
         return NULL;
     }
     v->type = VALUE_FLOATING;
@@ -149,12 +135,7 @@ static Value* parse_floating(Error* err, TokenStream* ts)
     errno = 0;
     v->f64= strtod(t->start, NULL);
     if (errno != 0) {
-        error_push(err, "(%s) failed to parse float: %s", __func__, strerror(errno));
-        return NULL;
-    }
-    tokenstream_advance(err, ts);
-    if (!error_empty(err)) {
-        error_push(err, "(%s) couldn't advance parser", __func__);
+        error_push(err, "failed to parse float: %s", strerror(errno));
         return NULL;
     }
     return v;
@@ -163,10 +144,9 @@ static Value* parse_floating(Error* err, TokenStream* ts)
 static void conv_int_to_float(Error* err, Value* val)
 {
     if (val->type != VALUE_INTEGER) {
-        error_push(err, "(%s) conversion from %s to float not implemented", __func__, value_type_str[val->type]);
+        error_push(err, "conversion from %s to float not implemented", value_type_str[val->type]);
         return;
     }
-    fprintf(stderr, "converting %ld to %lf", val->i64, (double)val->i64);
     val->f64 = (double)val->i64; 
     val->type = VALUE_FLOATING;
 }
@@ -177,11 +157,9 @@ static Value* binary_op(Error* err, Value* lval, Value* rval, Token* op)
      || (rval->type != VALUE_INTEGER && rval->type != VALUE_FLOATING)
      || op->type    != TOKEN_OPERATOR)
     {
-        error_push(err, "%s: unexpected token types: %s %s %s",
-                __func__, value_type_str[lval->type],
-                value_type_str[rval->type], token_type_str[op->type]);
-        fprintf(stderr, "\n####\n");
-        token_print(err, op);
+        error_push(err, "unexpected token types: %s %s %s",
+                value_type_str[lval->type], value_type_str[rval->type],
+                token_type_str[op->type]);
         goto fail;
     }
 
@@ -197,7 +175,7 @@ static Value* binary_op(Error* err, Value* lval, Value* rval, Token* op)
 
     Value* result = calloc(1, sizeof *result);
     if (!result) {
-        error_push(err, "%s: failed to allocate value: %s", __func__, strerror(errno));
+        error_push(err, "failed to allocate value: %s", strerror(errno));
         goto fail;
     }
 
@@ -235,11 +213,11 @@ static Value* binary_op(Error* err, Value* lval, Value* rval, Token* op)
             break;
         }
     }
-	free(op);
+    free(op);
     return result;
 
 fail:
-	return NULL;
+    return NULL;
 }
 
 static inline int8_t operator_precedence(Token* op)
@@ -259,11 +237,16 @@ static Value* parse_expr(Error* err, TokenStream* ts)
     FixedStack op_stack = STACK_INIT;
     FixedStack value_stack = STACK_INIT;
 
-    fprintf(stderr, "PRATT START\n");
+    fprintf(stderr, "EXPR START\n");
 
     while (1) {
-        token_print(NULL, ts->cur);
-        switch (ts->cur->type) {
+        Token* cur = tokenstream_cur(ts);
+        token_print(err, cur);
+        if (!error_empty(err)) {
+            fprintf(stderr, "failed to print error");
+            exit(1);
+        }
+        switch (cur->type) {
         case TOKEN_INTEGER:
             stack_push(&value_stack, parse_int(err, ts));
             if (!error_empty(err))
@@ -282,14 +265,15 @@ static Value* parse_expr(Error* err, TokenStream* ts)
             break;
 
         case TOKEN_PAREN_OPEN:
-            stack_push(&op_stack, ts->cur);
-            tokenstream_advance(err, ts);
+            stack_push(&op_stack, tokenstream_get(err, ts));
             if (!error_empty(err))
                 goto fail;
             break;
 
         case TOKEN_PAREN_CLOSE:
-            while (!stack_empty(&op_stack) && ((Token*)stack_top(&op_stack))->type != TOKEN_PAREN_OPEN) {
+            while (!stack_empty(&op_stack)
+               && ((Token*)stack_top(&op_stack))->type != TOKEN_PAREN_OPEN)
+            {
                 Value* rval = stack_pop(&value_stack);
                 Value* lval = stack_pop(&value_stack);
                 Token* op   = stack_pop(&op_stack);
@@ -299,7 +283,7 @@ static Value* parse_expr(Error* err, TokenStream* ts)
                 stack_push(&value_stack, result);
             }
             if (((Token*)stack_top(&op_stack))->type != TOKEN_PAREN_OPEN) {
-                error_push(err, "%s: mismatched parentheses", __func__);
+                error_push(err, "mismatched parentheses");
                 return NULL;
             } else {
                 stack_pop(&op_stack);
@@ -311,9 +295,13 @@ static Value* parse_expr(Error* err, TokenStream* ts)
             break;
 
         case TOKEN_OPERATOR: {
-            Token* new_op = ts->cur;
+            Token* new_op = tokenstream_get(err, ts);
+            if (!error_empty(err))
+                goto fail;
             if (!stack_empty(&op_stack)) {
-                while (operator_precedence(new_op) < operator_precedence(stack_top(&op_stack))) {
+                while (operator_precedence(new_op)
+                     < operator_precedence(stack_top(&op_stack)))
+                {
                     Value* rval   = stack_pop(&value_stack);
                     Value* lval   = stack_pop(&value_stack);
                     Token* op     = stack_pop(&op_stack);
@@ -323,9 +311,6 @@ static Value* parse_expr(Error* err, TokenStream* ts)
                     stack_push(&value_stack, result);
                 }
             }
-            tokenstream_advance(err, ts);
-            if (!error_empty(err))
-                goto fail;
             stack_push(&op_stack, new_op);
             break;}
 
@@ -344,26 +329,28 @@ end:
         stack_push(&value_stack, result);
     }
     if (stack_len(&value_stack) != 1 && stack_len(&op_stack) != 0) {
-        error_push(err, "(%s) bad expression", __func__);
+        error_push(err, "bad expression");
         goto fail;
     }
-    fprintf(stderr, "PRATT END\n");
+    fprintf(stderr, "EXPR END\n");
     return stack_top(&value_stack);
     
 fail:
     return NULL;
 }
 
-static Value* parser_next(Error* err, TokenStream* ts)
+static Value* parse_statement(Error* err, TokenStream* ts)
 {
-    if (ts->cur->type == TOKEN_EOF || !error_empty(err)) {
+    if (tokenstream_cur(ts)->type == TOKEN_EOF || !error_empty(err)) {
         return NULL;
     }
 
     Value* result;
-    switch (ts->cur->type) {
+    Token* t = tokenstream_cur(ts);
+    switch (t->type) {
     case TOKEN_INTEGER:
     case TOKEN_FLOATING:
+    case TOKEN_IDENTIFIER:
         result = parse_expr(err, ts);
         if (!error_empty(err) || result == NULL) {
             goto syntax_error;
@@ -371,17 +358,22 @@ static Value* parser_next(Error* err, TokenStream* ts)
         fprintf(stderr, "result: ");
         value_print(stderr, result);
         fprintf(stderr, "\n");
-        
+        break;
+
+    case TOKEN_IF:
+        fprintf(stderr, "if statements not implemented");
+        exit(FATAL_NOT_IMPLEMENTED);
         break;
 
     default: syntax_error:
-        error_push(err, "(%s) syntax error: unexpected token %s (%s)", __func__,
-                token_type_str[ts->cur->type], token_str(ts->cur));
+        error_push(err, "syntax error: unexpected token %s (%s)",
+                token_type_str[tokenstream_cur(ts)->type],
+                token_str(tokenstream_cur(ts)));
         return NULL;
     }
 
-    if (ts->cur->type != TOKEN_STATEMENT_END) {
-        error_push(err, "(%s) expected semicolon", __func__);
+    if (tokenstream_cur(ts)->type != TOKEN_STATEMENT_END) {
+        error_push(err, "expected semicolon");
         return NULL;
     }
     tokenstream_advance(err, ts);
@@ -408,23 +400,21 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    TokenStream ts = {
-        .cur = NULL,
-        .next = NULL,
-        .m = m,
-    };
-    tokenstream_advance(&err, &ts);
-    tokenstream_advance(&err, &ts);
+    TokenStream ts = tokenstream_attach(&err, m);
+    if (!error_empty(&err)) {
+        error_push(&err, "tokenstream_attach");
+        error_print(&err);
+        return EXIT_FAILURE;
+    }
 
     while (!mfile_eof(m)) {
-        parser_next(&err, &ts);
+        parse_statement(&err, &ts);
         if (!error_empty(&err)) {
             error_print(&err);
             parser_print_position(&ts);
             return EXIT_FAILURE;
         }
     }
-
 
     mfile_close(&err, m);
     if (!error_empty(&err)) {

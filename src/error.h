@@ -5,8 +5,8 @@
 #include <stdbool.h>
 
 struct error_msg {
-	struct error_msg* next;
-	char* message;
+    struct error_msg* next;
+    char* message;
 };
 
 typedef struct error {
@@ -17,7 +17,8 @@ typedef struct error {
 bool error_empty(Error* err);
 
 /* Add message to error */
-void error_push(Error* err, const char* fmt, ...);
+void error_push_(Error* err, const char* fmt, ...);
+#define error_push(err, fmt, args...) error_push_(err, "(%s) " fmt, __func__ __VA_OPT__(,) args)
 
 /* Print error */
 void error_print(Error* err);

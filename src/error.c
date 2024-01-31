@@ -13,12 +13,12 @@ bool error_empty(Error* err)
     return err->msg == NULL;
 }
 
-void error_push(Error* err, const char* fmt, ...)
+void error_push_(Error* err, const char* fmt, ...)
 {
-	if (!err)
-		return;
+    if (!err)
+        return;
 
-	#define MSG_SIZE 128
+    #define MSG_SIZE 128
 
     // first list element is a dummy element
     if (err->msg == NULL) {
@@ -31,37 +31,35 @@ void error_push(Error* err, const char* fmt, ...)
 
     struct error_msg* m = err->msg;
 
-	while (m->next) {
-		m = m->next;
-	}
-	m->next = malloc(sizeof *m);
-	if (m->next == NULL) {
-		perror("malloc");
+    while (m->next) {
+        m = m->next;
+    }
+    m->next = malloc(sizeof *m);
+    if (m->next == NULL) {
+        perror("malloc");
         exit(EXIT_FAILURE);
-	}
-	m->next->message = malloc(MSG_SIZE);
-	if (!(m->next->message)) {
-		perror("malloc");
+    }
+    m->next->message = malloc(MSG_SIZE);
+    if (!(m->next->message)) {
+        perror("malloc");
         exit(EXIT_FAILURE);
-	}
-	va_list args;
-	va_start(args, fmt);
-	vsnprintf(m->next->message, MSG_SIZE, fmt, args);
-	va_end(args);
+    }
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(m->next->message, MSG_SIZE, fmt, args);
+    va_end(args);
 
-	#undef MSG_SIZE
+    #undef MSG_SIZE
 }
 
 static void error_msg_print(struct error_msg* msg, bool print_colon)
 {
-	if (!msg)
-		return;
+    if (!msg)
+        return;
     error_msg_print(msg->next, true);
-
-	if (msg->message) {
-		fprintf(stderr, "%s", msg->message);
-	}
-
+    if (msg->message) {
+        fprintf(stderr, "%s", msg->message);
+    }
     if (print_colon) {
         fprintf(stderr, "\n - ");
     }
